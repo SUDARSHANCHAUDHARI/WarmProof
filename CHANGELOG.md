@@ -3,6 +3,22 @@
 Notable changes to WarmProof. Versions follow [semantic versioning](https://semver.org/), and the
 version in `.claude-plugin/plugin.json` is the one a release is tagged with.
 
+## [0.8.1] — 2026-10-17
+
+Accuracy, found by reading every tracked file line by line rather than searching it.
+
+### Fixed
+
+- A ping sent as a real turn wrote its `request` row as `via: "fork"`, with `"(as a turn)"` added
+  to the text to compensate. `via` now carries `turn`, and `LedgerRow`'s union has a `turn` member.
+  The tool-denial row keeps `fork` deliberately: a fork ping is what that denial protects.
+- The README promised the mod never adds a turn to your conversation. With `pingVia: turn` it
+  does, and both the summary and the feature list now say so.
+- Stale counts: the test badge said 132 and "Built with" said 117 cases. Both are 138.
+- `prove fast turn` and `prove fast fork`, the per-run mechanism override, were shipped
+  undocumented and are now in the commands table.
+- The build note now says what CI actually does: 2.1.299 pinned per push, latest weekly.
+
 ## [0.8.0] — 2026-10-16
 
 The first version worth using. Everything below is in it.
@@ -58,3 +74,4 @@ The first version worth using. Everything below is in it.
 - Every hook fails open: a hook that throws is logged and the session carries on.
 
 [0.8.0]: https://github.com/SUDARSHANCHAUDHARI/WarmProof/releases/tag/v0.8.0
+[0.8.1]: https://github.com/SUDARSHANCHAUDHARI/WarmProof/releases/tag/v0.8.1
