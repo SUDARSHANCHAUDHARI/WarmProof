@@ -1827,6 +1827,9 @@ describe('the other mechanism, for comparison', () => {
     await $.turn.complete(turn(200_500, 40))
     expect(evidence(w.files).find(row => row.kind === 'ping'))
       .toMatchObject({ via: 'turn', read: 200_500, write: 40, warm: true })
+    // The request row names the channel it really used, so the log does not call a turn a fork.
+    expect(evidence(w.files).find(row => row.kind === 'request'))
+      .toMatchObject({ via: 'turn', what: 'ping', ok: true })
   })
 
   test('a ping sent as a turn does not restart the break it was sent to carry', { options: { pingVia: 'turn' } }, async ($, on) => {

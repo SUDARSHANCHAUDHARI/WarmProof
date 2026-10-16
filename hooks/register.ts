@@ -103,10 +103,10 @@ async function askModel($: EngineInterface, s: State, prompt: string, what: stri
 async function askModelTurn($: EngineInterface, s: State, text: string, what: string) {
   try {
     const result = await $.prompt.submit({ text })
-    await note($, s, { kind: 'request', via: 'fork', what: `${what} (as a turn)`, ok: true })
+    await note($, s, { kind: 'request', via: 'turn', what, ok: true })
     return result
   } catch (err) {
-    await note($, s, { kind: 'request', via: 'fork', what: `${what} (as a turn)`, ok: false, error: because(err) })
+    await note($, s, { kind: 'request', via: 'turn', what, ok: false, error: because(err) })
     throw err
   }
 }
@@ -1515,6 +1515,7 @@ export const register: Register = (on, options) => {
       return next(e)
     }
     $.ui.log(`warmproof: refused ${e.tool} while a ping was in flight; a ping must not run tools`)
+    // `fork` is the channel here because a fork ping is what the denial protected.
     await note($, s, { kind: 'request', via: 'fork', what: `denied tool ${e.tool} during a ping`, ok: false })
     return { deny: 'warmproof: a keep-warm ping must not call tools' }
   })

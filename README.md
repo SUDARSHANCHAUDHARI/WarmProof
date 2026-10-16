@@ -1,6 +1,6 @@
 # WarmProof
 
-[![Release](https://img.shields.io/github/v/release/SUDARSHANCHAUDHARI/WarmProof?color=4c1)](https://github.com/SUDARSHANCHAUDHARI/WarmProof/releases/latest) ![License](https://img.shields.io/badge/License-MIT-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white) ![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287+-d97757) ![Tests](https://img.shields.io/badge/tests-132%20passing-4c1) [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/sudarshanchaudhari)
+[![Release](https://img.shields.io/github/v/release/SUDARSHANCHAUDHARI/WarmProof?color=4c1)](https://github.com/SUDARSHANCHAUDHARI/WarmProof/releases/latest) ![License](https://img.shields.io/badge/License-MIT-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white) ![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287+-d97757) ![Tests](https://img.shields.io/badge/tests-138%20passing-4c1) [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/sudarshanchaudhari)
 
 > Keeps Claude Code's one-hour prompt cache warm while you step away, and proves whether it held.
 
@@ -8,8 +8,8 @@ Claude Code caches your conversation for an hour of idle time. Step away for lon
 message you send re-writes the whole context before you get an answer.
 
 WarmProof keeps that cache alive while you are away — and then checks whether it actually worked.
-It pings only when you ask it to, only inside your working hours, and never adds a turn to your
-conversation. Every ping, every real turn and every compaction is written down, and the first
+It pings only when you ask it to, only inside your working hours, and adds no turn to your
+conversation unless you switch `pingVia` to `turn` yourself. Every ping, every real turn and every compaction is written down, and the first
 message after a pinged break says `proven` or `NOT proven`.
 
 It does work: in a measured run, one ping carried a 54,763-token context across a 75-minute gap,
@@ -24,7 +24,7 @@ and the next message read 54,761 of those tokens back from the cache instead of 
 - **Keeps evidence** — every ping, turn, compaction, request and verdict in one JSONL per instance
 - **Measures what it costs** — in tokens and in plan allowance, taken from your own log
 - **Refuses to waste money** — metered backends, five-minute caches, plan ceilings, daily budget, per-model caps, a half-typed message, a kill switch
-- **Never adds a turn** — a ping is a tool-less side request, and cannot call a tool
+- **Adds no turn** — a ping is a tool-less side request that cannot call a tool, unless you ask for `pingVia: turn`
 - **Fails open** — no hook of ours can gate your session on its own error
 - **Profile-aware** — follows `CLAUDE_CONFIG_DIR`, so work and personal setups stay separate
 - **Tells you about double spend** — when another session is already warming the same folder
@@ -71,6 +71,7 @@ working.
 | `/warmproof ping` | Send one ping now and report what the cache served — the fastest way to test the mechanism |
 | `/warmproof prove` | Run the experiment behind the whole mod: arm, ping, wait out the hour, then the next message says proven or not |
 | `/warmproof prove fast` | The same experiment on the five-minute cache: about seven minutes instead of seventy |
+| `/warmproof prove fast turn`, `prove fast fork` | The same run against one mechanism, whatever `pingVia` is set to, so the two can be compared |
 | `/warmproof export [days]` | The totals plus every verdict, miss and sleep, as a block you can paste into an issue |
 | `/warmproof report [days]` | Totals: pings and their spend, breaks proven and not, context kept, cold writes by cause, compactions held, and what a ping costs in plan allowance |
 | `/warmproof sessions` | Every session of this profile in the last day: folder, last turn, context, window |
@@ -232,7 +233,7 @@ Kill switch: create `<config dir>/warmproof-off` and nothing will ping.
 - **Surface:** the Claude Code mod API (`hooks/hooks.json` → `register.ts`), 16 hooks and 3 commands
 - **State:** `$.state` for the slice that must survive a reload; `$.store` for cross-session facts
 - **Evidence:** JSONL under the active profile's config folder, one file per plugin instance
-- **Checks:** `claude plugin test` (117 cases) plus two self-checking Python scripts, on CI for Linux and macOS
+- **Checks:** `claude plugin test` (138 cases) plus two self-checking Python scripts, on CI for Linux and macOS
 - **Requires:** Claude Code 2.1.287 or later, since mods are an early-access API
 
 ## Running it
@@ -290,7 +291,8 @@ the file it was handed to. Everything else is pure, and therefore tested directl
 | `types/index.d.ts` | The `$.state` contract for the runtime slice |
 | `scripts/check-evidence.py` | Fails if anything spends or sends outside the logged wrappers |
 
-Needs Claude Code 2.1.287 or later, since mods are an early-access API. Built against 2.1.294.
+Needs Claude Code 2.1.287 or later, since mods are an early-access API. Built and measured against
+2.1.294; CI pins 2.1.299 on every push and tracks the latest weekly.
 
 ## Known limits
 
