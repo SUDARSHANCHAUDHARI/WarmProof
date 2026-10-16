@@ -372,6 +372,19 @@ export function billingMode(env: Readonly<Record<string, string | undefined>>): 
 /** How the cache lifetime in force was established, strongest first. */
 export type TtlSource = 'env' | 'model-switch' | 'transcript' | 'assumed'
 
+/**
+ * Minutes the machine was asleep, inferred from a tick that arrived far later than its interval.
+ * Timers do not run while a Mac sleeps, so a gap here is not idle time: nothing pinged, and any
+ * cache that expired during it did so unattended. Null when the tick was merely late.
+ */
+export function sleptMinutes(lastTickAt: number, now: number, tickMs: number): number | null {
+  if (!lastTickAt) return null
+  const gap = now - lastTickAt
+  // Two and a half intervals: late enough that a missed tick cannot explain it.
+  if (gap < tickMs * 2.5) return null
+  return Math.round(gap / 60_000)
+}
+
 // ---------- learning from your own breaks
 
 /** The idle gaps between real turns, in minutes. Ten minutes or more counts as a break. */
@@ -410,6 +423,32 @@ export function worthPinging(breaks: readonly number[], idleMin: number): boolea
   if (!stillAway.length) return false
   const backWithinTheHour = stillAway.filter(minutes => minutes <= idleMin + 60).length
   return backWithinTheHour / stillAway.length > 0.05
+}
+
+/**
+ * The ping period this session's own history justifies, in minutes.
+ *
+ * 50 minutes is a guess with a ten-minute margin. Pings that keep holding say the margin is
+ * bigger than it needs to be, so the period creeps later and each idle stretch costs fewer
+ * pings. A single miss is the expensive outcome, so one pulls the period back hard and the
+ * creep starts again from there. Null while there is too little history to argue with.
+ */
+export function learnedEveryMinutes(
+  pings: ReadonlyArray<{ warm: boolean; idleMin: number }>,
+  current: number,
+  ceiling = 55,
+  floor = 20,
+): number | null {
+  const recent = pings.slice(-8)
+  if (recent.length < 4) return null
+  const missed = recent.filter(ping => !ping.warm)
+  if (missed.length) {
+    // Back off to well inside the shortest idle that still missed.
+    const earliest = Math.min(...missed.map(ping => ping.idleMin))
+    return Math.max(floor, Math.min(current, earliest - 10))
+  }
+  if (recent.every(ping => ping.warm)) return Math.min(ceiling, current + 2)
+  return null
 }
 
 // ---------- at the Mac, or away

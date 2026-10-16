@@ -12,8 +12,9 @@ import {
   parseIdleSeconds, peakPlanUsage, projectPolicy, suggestWindowMs, ttlFromTail, weekKey, worthPinging,
 } from '../hooks/policy'
 import { configDir, fmtCost, inWorkHours, ntfyButtonsReady, ntfyRequest, parseClock, readConfig } from '../hooks/extras'
+import { exportFrom } from '../hooks/views'
 import { breakVerdict } from '../hooks/ledger'
-import { rivalsInFolder, sessionOfLogFile, summarise } from '../hooks/policy'
+import { learnedEveryMinutes, rivalsInFolder, sessionOfLogFile, sleptMinutes, summarise } from '../hooks/policy'
 import { fmtDuration, parseDuration, ratesFor } from '../hooks/money'
 import { typingNow } from '../hooks/policy'
 
@@ -110,7 +111,13 @@ function world(on: On, fixture: Fixture = {}) {
   const envWrites: Array<[string, string | undefined]> = []
   const commands: string[][] = []
 
-  mock.store(on, fixture.store ?? {})
+  // The store, ours to inspect: mock.store answers the ops but returns no handle, so a test
+  // could not assert what was written to it.
+  const store = new Map<string, unknown>(Object.entries(fixture.store ?? {}))
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => { store.set(e.key, e.value); return { value: undefined } })
+  on('store.delete', ($, e) => { store.delete(e.key); return { value: undefined } })
+  on('store.keys', () => ({ value: [...store.keys()] }))
 
   on('env.get', ($, e) => ({ value: env[e.name] }))
   on('env.set', ($, e) => {
@@ -210,7 +217,7 @@ function world(on: On, fixture: Fixture = {}) {
     return { value }
   })
 
-  return { posts, polls, forks, forkTtlEnv, compactions, logs, status, files, envWrites, commands }
+  return { posts, polls, forks, forkTtlEnv, compactions, logs, status, files, envWrites, commands, store }
 }
 
 /** The evidence rows this session wrote, parsed. */
@@ -1423,13 +1430,22 @@ describe('the review findings stay fixed', () => {
 
   test('a digest that cannot be sent is still owed next tick', { options: { ...PHONE, weeklyDigest: true } }, async ($, on) => {
     const clock = mock.clock(on, { now: MON_0931 })
-    // No profile folder: reportText finds no evidence dir, so nothing is written or pushed.
+    // No profile folder, so reportText returns early: nothing is written and nothing is pushed.
     const w = world(on, { env: {} })
     await $.session.start(session)
     await clock.advance(61 * 1000)
     expect(w.posts.filter(post => (post.body.message ?? '').startsWith('warmproof report'))).toHaveLength(0)
-    // The week must not have been marked sent: with a folder present it goes out on a later tick.
     expect(w.files.size).toBe(0)
+    // The point of the fix: the week is not marked, so a later tick with a folder tries again.
+    expect(w.store.get('digestWeek')).toBeUndefined()
+  })
+
+  test('a digest that goes out marks its week, so it goes out once', { options: { ...PHONE, weeklyDigest: true } }, async ($, on) => {
+    const clock = mock.clock(on, { now: MON_0931 })
+    const w = world(on)
+    await $.session.start(session)
+    await clock.advance(61 * 1000)
+    expect(w.store.get('digestWeek')).toBe('2026-10-19')
   })
 
   test('a rolled log is not listed as a session of its own', async ($, on) => {
@@ -1630,5 +1646,263 @@ describe('one log file per instance', () => {
     const text = (await $.command.run(run('warmproof', 'report'))).text
     expect(text).toMatch(/pings {8}1 \(1 warm\)/)
     expect(text).toMatch(/proof {8}1 break checks: 1 proven, 0 not proven/)
+  })
+})
+
+describe('a stop reason is news, not wallpaper', () => {
+  test('the countdown comes back once you work again', async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on, { pings: [{ read: 0, write: 200000 }] })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '2h'))
+    await clock.advance(50 * MINUTE)
+    // The miss stopped the window and the status says why.
+    expect(w.status.at(-1)).toMatch(/^keepwarm stopped: the ping read 0 and wrote 200k/)
+    // A real turn moves the session on: the reason must not sit there for the rest of the day.
+    await $.turn.complete(turn())
+    expect(w.status.at(-1)).toBe('cache 1h00m left · cold resume 201k tokens')
+    expect((await $.command.run(run('warmproof'))).text).toMatch(/keepwarm {4}off \(/)
+  })
+})
+
+describe('the lifetime follows the session', () => {
+  test('a five-minute session counts down in minutes, not an hour', { options: { showCountdown: true } }, async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on, { env: { ...DEFAULT_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    expect(w.status.at(-1)).toBe('cache 5m left · cold resume 201k tokens')
+    await clock.advance(6 * MINUTE)
+    expect(w.status.at(-1)).toBe('cache cold · the next message re-writes 201k tokens')
+  })
+
+  test('a window on a five-minute cache says why it cannot work', async ($, on) => {
+    mock.clock(on, { now: WED_10AM })
+    const w = world(on, { env: { ...DEFAULT_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '2h'))
+    expect(w.status.at(-1)).toBe('keepwarm stopped: this session uses the 5-minute cache, which pings cannot hold')
+    expect(w.forks).toHaveLength(0)
+  })
+
+  test('the guard fires at five minutes on a five-minute cache', async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    world(on, { env: { ...DEFAULT_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await clock.advance(6 * MINUTE)
+    // On the old fixed hour this send would have passed unguarded.
+    expect('drop' in (await $.prompt.submit(typed('recap')))).toBe(true)
+  })
+})
+
+describe('a sleeping Mac is not an idle one', () => {
+  test('a gap far past the tick interval is sleep', async () => {
+    expect(sleptMinutes(0, WED_10AM, 60_000)).toBe(null)
+    expect(sleptMinutes(WED_10AM, WED_10AM + 70_000, 60_000)).toBe(null)
+    expect(sleptMinutes(WED_10AM, WED_10AM + 40 * MINUTE, 60_000)).toBe(40)
+  })
+
+  // The engine-level case is not staged here: mock.clock replays every interval as it advances,
+  // so it cannot produce the gap a sleeping machine leaves (the host simply does not fire the
+  // timer while asleep). The rule above is what the detection is; the wiring is one call.
+})
+
+describe('the fast proof', () => {
+  test('it refuses on the one-hour cache, and says where to run it', async ($, on) => {
+    mock.clock(on, { now: WED_10AM })
+    world(on)
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    expect((await $.command.run(run('warmproof', 'prove fast'))).text)
+      .toMatch(/^the fast proof runs on the five-minute cache, and this session is on the one-hour one\./)
+  })
+
+  test('it arms a window that pings a minute before the cache lapses', async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on, { env: { ...DEFAULT_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    const armed = await $.command.run(run('warmproof', 'prove fast'))
+    expect(armed.text).toMatch(/^fast proof armed with 201k of context, testing the fork mechanism\./)
+    expect(armed.text).toMatch(/A ping goes out after 4m of idle/)
+    expect(armed.text).toMatch(/Leave this session alone for 7m/)
+    // A ping sent at once would hold the cache only as long as an unpinged one lives.
+    expect(w.forks).toHaveLength(0)
+    await clock.advance(4 * MINUTE)
+    expect(w.forks).toHaveLength(1)
+    expect(evidence(w.files).find(row => row.kind === 'ping')).toMatchObject({ warm: true, idleMin: 4 })
+  })
+
+  test('the verdict arrives after the short gap, and the guard does not eat it', async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on, { env: { ...DEFAULT_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('warmproof', 'prove fast'))
+    await clock.advance(7 * MINUTE)
+    // Seven minutes on a five-minute cache: cold by the guard's reckoning, and the message is
+    // the measurement, so it must go through rather than be held.
+    expect('drop' in (await $.prompt.submit(typed('back')))).toBe(false)
+    await $.turn.complete(turn(200000, 600))
+    expect(evidence(w.files).find(row => row.kind === 'break-check')).toMatchObject({ verdict: 'extended', pings: 1 })
+    expect(w.logs.at(-1)).toMatch(/the proof you asked for: proven/)
+  })
+
+  test('outside a proof run the guard still holds a cold send', async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    world(on, { env: { ...DEFAULT_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await clock.advance(7 * MINUTE)
+    expect('drop' in (await $.prompt.submit(typed('back')))).toBe(true)
+  })
+})
+
+describe('evidence you can paste into an issue', () => {
+  test('it carries the verdicts and misses, and no paths', async () => {
+    const at = (m: number) => new Date(WED_10AM + m * MINUTE).toISOString()
+    const text = exportFrom([
+      { at: at(0), kind: 'start', cwd: '/repos/my-app', file: 'S1-ab12cd34.jsonl' },
+      { at: at(10), kind: 'ping', warm: false, read: 0, write: 200000, input: 2, output: 1 },
+      { at: at(80), kind: 'break-check', verdict: 'extended', idleMin: 75, pings: 1, read: 54761, write: 419, prevCtx: 54763 },
+      { at: at(90), kind: 'wake', sleptMin: 40 },
+    ], WED_10AM + 100 * MINUTE, 7)
+    expect(text).toMatch(/^```/)
+    expect(text).toMatch(/break-check {2}extended {2}idle 75m {2}pings 1 {2}read 54761 {2}wrote 419/)
+    expect(text).toMatch(/ping missed {2}read 0 {2}wrote 200000/)
+    expect(text).toMatch(/wake {9}asleep about 40m/)
+    // Nothing identifying: no folder, no file name, no clock time.
+    expect(text).not.toMatch(/my-app|repos|S1-ab12cd34|10:/)
+  })
+
+  test('the command refuses when there is nothing logged', async ($, on) => {
+    mock.clock(on, { now: WED_10AM })
+    world(on, { env: {} })
+    await $.session.start(session)
+    expect((await $.command.run(run('warmproof', 'export'))).text).toBe('no evidence logged yet')
+  })
+})
+
+describe('the ping period can be learned', () => {
+  const ping = (warm: boolean, idleMin: number) => ({ warm, idleMin })
+
+  test('pings that keep holding push it later, a miss pulls it back', async () => {
+    expect(learnedEveryMinutes([ping(true, 50), ping(true, 50)], 50)).toBe(null)
+    expect(learnedEveryMinutes(Array(4).fill(ping(true, 50)), 50)).toBe(52)
+    expect(learnedEveryMinutes(Array(4).fill(ping(true, 54)), 54)).toBe(55)
+    // 55 is the ceiling, since a ping past the hour is worthless.
+    expect(learnedEveryMinutes(Array(4).fill(ping(true, 55)), 55)).toBe(55)
+    // A miss at 52 means stay well inside it.
+    expect(learnedEveryMinutes([ping(true, 50), ping(true, 50), ping(true, 50), ping(false, 52)], 52)).toBe(42)
+  })
+
+  test('off by default, and applied when on', { options: { adaptPingPeriod: true } }, async ($, on) => {
+    mock.clock(on, { now: WED_10AM })
+    const files: FakeFiles = new Map()
+    seedEvidence(files, 'OLD4', Array.from({ length: 4 }, (_, i) => ({
+      at: new Date(WED_10AM - (i + 1) * 60 * MINUTE).toISOString(),
+      kind: 'ping', warm: true, idleMin: 50, read: 200000, write: 0, input: 2, output: 1,
+    })))
+    const w = world(on, { files })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '2h'))
+    expect(w.logs.some(line => /pinging every 52m instead of 50m, from 4 pings on record/.test(line))).toBe(true)
+  })
+})
+
+describe('the other mechanism, for comparison', () => {
+  test('pingVia turn sends a real turn and records which mechanism it was', { options: { pingVia: 'turn' } }, async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on)
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '2h'))
+    await clock.advance(50 * MINUTE)
+    // No fork: the ping went as a turn instead, and that turn's own usage is what it cost.
+    expect(w.forks).toHaveLength(0)
+    await $.turn.complete(turn(200_500, 40))
+    expect(evidence(w.files).find(row => row.kind === 'ping'))
+      .toMatchObject({ via: 'turn', read: 200_500, write: 40, warm: true })
+  })
+
+  test('a ping sent as a turn does not restart the break it was sent to carry', { options: { pingVia: 'turn' } }, async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on)
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '2h'))
+    await clock.advance(50 * MINUTE)
+    await $.turn.complete(turn(200_500, 40))
+    // An hour and ten minutes after the only real turn, this one still gets a verdict: the ping's
+    // own turn was booked as a ping, so the clock the proof hangs off was left alone.
+    await clock.advance(20 * MINUTE)
+    await $.turn.complete(turn(200_540, 300))
+    expect(evidence(w.files).find(row => row.kind === 'break-check'))
+      .toMatchObject({ verdict: 'extended', pings: 1 })
+  })
+
+  test('a turn that arrives too late to be the ping counts as a real turn', { options: { pingVia: 'turn' } }, async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on)
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '2h'))
+    await clock.advance(50 * MINUTE)
+    // The ping's turn never landed. Four minutes later this is your own work, not that ping.
+    await clock.advance(4 * MINUTE)
+    await $.turn.complete(turn(200_500, 40))
+    const rows = evidence(w.files)
+    expect(rows.find(row => row.kind === 'ping')).toBeUndefined()
+    expect(rows.filter(row => row.kind === 'turn')).toHaveLength(2)
+  })
+
+  test('fork is the default, and records no mechanism', async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on)
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '2h'))
+    await clock.advance(50 * MINUTE)
+    expect(w.forks).toHaveLength(1)
+    expect(evidence(w.files).find(row => row.kind === 'ping')?.via).toBeUndefined()
+  })
+})
+
+describe('the A/B needs no config change', () => {
+  test('a run names the mechanism it tests, and that beats the option', { options: { pingVia: 'fork' } }, async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on, { env: { ...DEFAULT_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    const armed = await $.command.run(run('warmproof', 'prove fast turn'))
+    expect(armed.text).toMatch(/testing the turn mechanism/)
+    await clock.advance(4 * MINUTE)
+    // The option says fork, the run says turn: no fork goes out, and the row records which.
+    expect(w.forks).toHaveLength(0)
+    await $.turn.complete(turn(200_500, 40))
+    expect(evidence(w.files).find(row => row.kind === 'ping')).toMatchObject({ via: 'turn' })
+  })
+
+  test('the option still decides outside a proof run', { options: { pingVia: 'fork' } }, async ($, on) => {
+    const clock = mock.clock(on, { now: WED_10AM })
+    const w = world(on, { env: { ...DEFAULT_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' } })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('warmproof', 'prove fast'))
+    await clock.advance(4 * MINUTE)
+    expect(w.forks).toHaveLength(1)
+  })
+
+  test('a word that is not a mechanism is refused', async ($, on) => {
+    mock.clock(on, { now: WED_10AM })
+    world(on)
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    expect((await $.command.run(run('warmproof', 'prove quickly'))).text)
+      .toBe('/warmproof prove takes fast, fork or turn: prove, prove fast, prove fast turn')
   })
 })

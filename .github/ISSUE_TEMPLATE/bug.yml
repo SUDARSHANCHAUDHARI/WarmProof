@@ -1,0 +1,56 @@
+name: Bug report
+description: Something WarmProof did, or did not do, that it should have.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The ledger is what makes this diagnosable. `/warmproof report` is usually enough; the raw
+        rows from `<profile>/warmproof/*.jsonl` hold token counts and timestamps, not your
+        conversation.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Output of /warmproof report
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Matching ledger rows
+      description: The lines around the moment it went wrong.
+      render: json
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Claude Code version
+      description: Output of `claude --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: billing
+    attributes:
+      label: Billing, as /warmproof detected it
+      options:
+        - subscription
+        - metered
+        - not sure
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15.1, or Ubuntu 24.04
+    validations:
+      required: true

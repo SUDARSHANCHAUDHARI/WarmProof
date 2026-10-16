@@ -1,11 +1,18 @@
 name: check
 
-# Everything that can be verified without an API key or a credential. The plugin's own suite runs
-# against a mocked engine, so it needs no account; the two scripts are self-checking.
+# Everything verifiable without an account: the suite drives a mocked engine and both scripts
+# check themselves.
+#
+# Pushes run against a pinned Claude Code, so a host release cannot turn a branch red on a commit
+# that changed nothing. A weekly run tracks the latest instead, which is how drift in an
+# early-access API gets noticed on its own schedule rather than in the middle of a change.
 on:
   push:
     branches: ['**']
   pull_request:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 jobs:
   check:
@@ -21,8 +28,21 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Pick the Claude Code version
+        id: pick
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "spec=@anthropic-ai/claude-code@latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "spec=@anthropic-ai/claude-code@2.1.299" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g ${{ steps.pick.outputs.spec }}
+
+      - name: Report the version under test
+        run: claude --version
 
       - name: Validate the manifest and the hooks module
         run: claude plugin validate .

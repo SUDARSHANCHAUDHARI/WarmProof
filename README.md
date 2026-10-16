@@ -1,6 +1,6 @@
 # WarmProof
 
-[![Release](https://img.shields.io/github/v/release/SUDARSHANCHAUDHARI/WarmProof?color=4c1)](https://github.com/SUDARSHANCHAUDHARI/WarmProof/releases/latest) ![License](https://img.shields.io/badge/License-MIT-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white) ![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287+-d97757) ![Tests](https://img.shields.io/badge/tests-117%20passing-4c1) [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/sudarshanchaudhari)
+[![Release](https://img.shields.io/github/v/release/SUDARSHANCHAUDHARI/WarmProof?color=4c1)](https://github.com/SUDARSHANCHAUDHARI/WarmProof/releases/latest) ![License](https://img.shields.io/badge/License-MIT-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white) ![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287+-d97757) ![Tests](https://img.shields.io/badge/tests-132%20passing-4c1) [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/sudarshanchaudhari)
 
 > Keeps Claude Code's one-hour prompt cache warm while you step away, and proves whether it held.
 
@@ -70,6 +70,8 @@ working.
 | `/warmproof` | The card: cache state and lifetime source, cold cost, window, guard, billing, breaks |
 | `/warmproof ping` | Send one ping now and report what the cache served — the fastest way to test the mechanism |
 | `/warmproof prove` | Run the experiment behind the whole mod: arm, ping, wait out the hour, then the next message says proven or not |
+| `/warmproof prove fast` | The same experiment on the five-minute cache: about seven minutes instead of seventy |
+| `/warmproof export [days]` | The totals plus every verdict, miss and sleep, as a block you can paste into an issue |
 | `/warmproof report [days]` | Totals: pings and their spend, breaks proven and not, context kept, cold writes by cause, compactions held, and what a ping costs in plan allowance |
 | `/warmproof sessions` | Every session of this profile in the last day: folder, last turn, context, window |
 | `/warmproof leave 2h` | An away plan every open session with a warm, worthwhile cache picks up |
@@ -137,6 +139,16 @@ working.
   `evidenceMaxKb`, keeping one generation.
 - **No silent double spend.** Arming a window says so when another session of this profile is
   already warming the same folder, since both would ping the same conversation lineage.
+- **The lifetime follows the session.** A five-minute cache counts down in minutes, the guard
+  fires at five minutes, and a window opened on one says plainly that a ping cannot reach it.
+- **A sleeping Mac is not an idle one.** Timers do not run while it sleeps, so a gap the machine
+  slept through is logged as a `wake` row — and any proof run spanning it is voided rather than
+  reported, because it would measure the sleep rather than the ping.
+- **The period can be learned.** With `adaptPingPeriod`, pings that keep holding push the period
+  later and a single miss pulls it back well inside the shortest idle that failed.
+- **Both mechanisms, measured.** Every other tool injects a real turn; this forks. With
+  `pingVia: turn` the log records which mechanism each ping used, so the two can be compared on
+  your own account rather than argued about.
 - **A status-line segment.** `scripts/statusline-segment.py` reads the status-line JSON and prints
   `cache 42m left (1h)` or `cache cold · next msg re-writes 330k`. Wire it into your own status
   line; WarmProof never edits your settings for you.
@@ -163,6 +175,7 @@ one session. Rows:
 | `phone` | A button tap |
 | `leave` | An away plan this session adopted |
 | `digest` | The week a digest went out |
+| `wake` | The machine slept, for about how long, and whether a proof run was voided by it |
 
 Handoff notes go to `<config dir>/handoffs/<session-id>.md`.
 
@@ -201,6 +214,8 @@ Set them at install, or later through `/config`. They are stored under `pluginCo
 | `desktopNotify` | `false` | A desktop notice when you are at the Mac; the phone only when away |
 | `awayMinutes` | `5` | Input idle time that counts as away |
 | `pingOnlyIfWorthIt` | `false` | Skip a ping your own breaks say will not pay |
+| `adaptPingPeriod` | `false` | Let pings that keep holding push the period later, to 55 minutes, and pull it back hard after a miss |
+| `pingVia` | `fork` | `fork` adds no turn. `turn` sends a real turn as other tools do, so the two can be compared in the log — it does add a turn |
 | `pingSubagentTtl1h` | `false` | Give each ping fork the one-hour cache (`CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h` for that request only, then restored). Turn on only if the proof says pings need it |
 | `denyToolsDuringPing` | `true` | Refuse a tool call from another loop while a ping is in flight; your own tools are never affected |
 | `evidenceMaxKb` | `1024` | Roll a session's evidence file past this size, keeping one generation; `0` never rolls |
@@ -237,6 +252,8 @@ To settle whether pinging works at all on your setup:
 3. Run `/warmproof prove`. It arms the window, pings after the idle period, and tells you to leave
    the session alone for 1h10m. The next message you send then says `proven` or `NOT proven` —
    that proves the ping also *holds* the cache across a real gap, which is the stronger claim.
+   In a hurry, relaunch with `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` and run `/warmproof prove fast`:
+   same physics on the five-minute bucket, about seven minutes end to end.
 4. Repeat with `pingSubagentTtl1h` on, and compare.
 5. `/warmproof report` sums whatever you found, including what a ping cost in plan allowance.
 
@@ -269,7 +286,7 @@ the file it was handed to. Everything else is pure, and therefore tested directl
 | `hooks/extras.ts` | Options, working hours, the profile folder, the shape of an ntfy publish |
 | `hooks/ledger.ts` | The evidence row types, and the break verdict |
 | `hooks/status-icons.ts` | The band's mark, drawn as a vector or a glyph |
-| `tests/engine.test.ts` | The whole suite (117 tests), and the contract the engine was written against |
+| `tests/engine.test.ts` | The whole suite (138 tests), and the contract the engine was written against |
 | `types/index.d.ts` | The `$.state` contract for the runtime slice |
 | `scripts/check-evidence.py` | Fails if anything spends or sends outside the logged wrappers |
 
@@ -283,6 +300,14 @@ Needs Claude Code 2.1.287 or later, since mods are an early-access API. Built ag
   tokens back and wrote 419 (`verdict: extended`). One run on one account and one build, which is
   why every break is still checked instead of assumed — your own log is the authority, not this
   paragraph.
+- **Both mechanisms hold the cache; only one stays out of the transcript.** Run side by side on the
+  five-minute bucket, a fork ping and a ping sent as a real turn both came back `extended` across a
+  seven-minute break (fork: read 54,833, wrote 456. Turn: ping read 54,566 and wrote 471, then the
+  next message read 55,037 and wrote 1,146). They cost about the same — roughly 6,400
+  input-equivalent tokens a ping — but the turn is a real turn: it is written into the conversation,
+  so every ping leaves a few hundred tokens of transcript behind that you then pay to read for the
+  rest of the session. That is why `fork` is the default, and why `pingVia` exists at all: so the
+  comparison can be re-run on your account rather than taken on trust.
 - **Plan accounting is undocumented by Anthropic**, so WarmProof measures it instead: `report`
   prints `plan cost about 2.0% of five-hour per ping, from your own log`, derived from the usage
   percentages recorded on every ping and turn. That figure is the one worth watching, since the
@@ -298,6 +323,10 @@ Needs Claude Code 2.1.287 or later, since mods are an early-access API. Built ag
   a host upgrade mid-session left two builds writing one file.
 - **There is no file delete in the API.** `forget` empties evidence files rather than removing
   them, so retention by age is not possible — only the size roll.
+
+What changed between versions is in [CHANGELOG.md](CHANGELOG.md). What WarmProof touches on your
+machine, and how to report a hole in it, is in [SECURITY.md](SECURITY.md). If you want to send a
+patch or a measurement, [CONTRIBUTING.md](CONTRIBUTING.md) says what to run first.
 
 ## License
 

@@ -13,21 +13,23 @@ import { fmtDuration, fmtTok, fmtUsd, forkUsd, parseDuration, pingsPerColdWrite,
 import {
   appleScriptString, billingMode, breakMinutes, coldCause, dayKey, denyToolDuringPing, digestDue, limitsOf, parseIdleSeconds,
   peakPlanUsage, pendingWork, phoneAction, projectPolicy, spendKey, spendTokens, staleSpendKeys,
-  rivalsInFolder, sessionOfLogFile, suggestWindowMs, sumSpend, tokensInReplies, ttlFromTail, typingNow, wakesItself, weekKey,
+  learnedEveryMinutes, rivalsInFolder, sessionOfLogFile, sleptMinutes, suggestWindowMs, sumSpend, tokensInReplies, ttlFromTail, typingNow, wakesItself, weekKey,
   windowFromWords,
   worthPinging,
 } from './policy'
 import type { BackgroundTask, ReportRow } from './policy'
 import {
   AFTER_COLD_WRITE_MS, BREAK_HISTORY_DAYS, CACHE_LIFE_MS, DAY_MS, KIB, NOTE_DEADLINE_MS, PER_SESSION,
-  PHONE_POLL_MS, PING_DEADLINE_MS, PING_FLOOR_MS, PING_PROMPT, PROOF_FLOOR_TOKENS, SHARED, TICK_MS,
+  SHORT_CACHE_LIFE_MS, cacheLifeMs,
+  PHONE_POLL_MS, PING_DEADLINE_MS, PING_FLOOR_MS, PING_PROMPT, PING_TURN_WINDOW_MS, PROOF_FLOOR_TOKENS, SHARED, TICK_MS,
   TTL_RECHECK_MS, applyRuntime, clearTimer, conf, forgetConversation, freshState, loadConfig, snapshotRuntime,
 } from './runtime'
 import type { PhoneAction, State } from './runtime'
 import { markGlyph, markInk, markSvg } from './status-icons'
 import type { CacheMark } from './status-icons'
 import {
-  armedLine, card, coldSendWarning, isCold, reportFrom, seedFromResume, sessionsFrom, stateLine, worthGuarding,
+  armedLine, card, coldSendWarning, exportFrom, isCold, reportFrom, seedFromResume, sessionsFrom, stateLine,
+  worthGuarding,
 } from './views'
 import type { SessionSketch } from './views'
 
@@ -95,6 +97,18 @@ async function askModel($: EngineInterface, s: State, prompt: string, what: stri
       : {}),
   })
   return outcome
+}
+
+/** A ping sent as a real turn. Logged like any other spend. */
+async function askModelTurn($: EngineInterface, s: State, text: string, what: string) {
+  try {
+    const result = await $.prompt.submit({ text })
+    await note($, s, { kind: 'request', via: 'fork', what: `${what} (as a turn)`, ok: true })
+    return result
+  } catch (err) {
+    await note($, s, { kind: 'request', via: 'fork', what: `${what} (as a turn)`, ok: false, error: because(err) })
+    throw err
+  }
 }
 
 /** A compaction WarmProof asked for itself. */
@@ -323,6 +337,18 @@ async function startWindow($: EngineInterface, s: State, windowMs: number, every
   s.deadline = now + windowMs
   s.stopped = null
   await $.store.set(deadlineKey(s.sid), s.deadline)
+  if (conf().adaptPingPeriod) {
+    const pings = (await readRows($, s, now, BREAK_HISTORY_DAYS))
+      .filter(row => row.kind === 'ping' && typeof row.warm === 'boolean' && typeof row.idleMin === 'number')
+      .map(row => ({ warm: row.warm === true, idleMin: row.idleMin as number }))
+    const learned = learnedEveryMinutes(pings, Math.round(s.every / 60_000))
+    if (learned !== null && learned * 60_000 !== s.every) {
+      const was = s.every
+      s.every = learned * 60_000
+      await $.store.set(everyKey(s.sid), s.every)
+      $.ui.log(`warmproof: pinging every ${fmtDuration(s.every)} instead of ${fmtDuration(was)}, from ${pings.length} pings on record`)
+    }
+  }
   const rivals = await rivalWindows($, s, now)
   if (rivals.length) {
     const names = rivals.map(sid => sid.split('-')[0] ?? sid).join(', ')
@@ -339,6 +365,7 @@ async function stopWindow($: EngineInterface, s: State, why: string | null, forg
   s.fromBackground = false
   clearTimer(s, 'ping')
   clearTimer(s, 'turnPing')
+  clearTimer(s, 'proof')
   await $.store.delete(deadlineKey(s.sid))
   await $.store.delete(everyKey(s.sid))
   if (forgetAlways) {
@@ -359,10 +386,16 @@ async function schedule($: EngineInterface, s: State) {
   if (!s.deadline) return
   const now = await $.clock.now()
   if (now >= s.deadline) return finishWindow($, s)
+  // A ping period of 50 minutes cannot reach a cache that dies in five, so a window here would
+  // sit and never fire. Say so instead, unless this is a proof run that wants the short bucket.
+  if (s.shortTtl && !s.provingFast) {
+    return stopWindow($, s, 'this session uses the 5-minute cache, which pings cannot hold')
+  }
   clearTimer(s, 'alert')
-  const canPing = !s.headless && s.lastRequestAt > 0 && !s.compacted && !isCold(s, now)
+  // A proof run sends its own ping on its own timer, so the window must not send a second one.
+  const canPing = !s.headless && !s.proving && s.lastRequestAt > 0 && !s.compacted && !isCold(s, now)
   if (canPing) {
-    const untilCold = s.lastRequestAt + CACHE_LIFE_MS - now
+    const untilCold = s.lastRequestAt + cacheLifeMs(s) - now
     const untilDue = Math.max(1000, s.lastRequestAt + s.every - now)
     s.timers.ping = $.clock.after(Math.min(s.deadline - now, untilCold, untilDue), () => { void sendPing($, s) })
   } else {
@@ -388,7 +421,7 @@ async function sendPing($: EngineInterface, s: State) {
   // A turn landed while this timer waited, so it is early: let the new schedule take over.
   if (now - s.lastRequestAt < s.every - 1000) return schedule($, s)
   // A wake-up this session booked will read the cache anyway; wait until just after it.
-  if (s.wakeAt !== null && wakesItself(s.wakeAt, now, s.lastRequestAt + CACHE_LIFE_MS)) {
+  if (s.wakeAt !== null && wakesItself(s.wakeAt, now, s.lastRequestAt + cacheLifeMs(s))) {
     s.timers.ping = $.clock.after(s.wakeAt + 2 * 60_000 - now, () => { void sendPing($, s) })
     return
   }
@@ -418,7 +451,29 @@ export type PingOutcome = { held: boolean; read: number; write: number; usd: num
  * Sends one ping, accounts for it and logs it. Returns what the cache served, or the reason it
  * could not be sent. Shared by the idle timer and `/warmproof ping`, so both spend identically.
  */
+/**
+ * The other mechanism, for comparison: a real turn carrying the ping prompt, which is what every
+ * other keep-warm tool does. It adds a turn to your conversation, which is why it is opt-in — the
+ * point is to measure whether it holds the cache better than a fork, not to use it by default.
+ */
+async function firePingAsTurn($: EngineInterface, s: State, now: number, what: string): Promise<PingOutcome | string> {
+  // Claimed before the turn is submitted, because turn.complete may land before this returns.
+  s.pingTurnAt = now
+  try {
+    await askModelTurn($, s, PING_PROMPT, what)
+  } catch (err) {
+    s.pingTurnAt = 0
+    return `the ping turn failed, ${because(err)}`
+  }
+  // A real turn's usage arrives through turn.complete, which writes the ping row with the figures
+  // that turn reports and leaves the break clock alone. Nothing is counted here.
+  return { held: true, read: 0, write: 0, usd: null, spend: 0 }
+}
+
 async function firePing($: EngineInterface, s: State, now: number, what: string): Promise<PingOutcome | string> {
+  // A proof run names the mechanism it is testing; otherwise the option decides.
+  const via = s.proveVia ?? conf().pingVia
+  if (via === 'turn') return firePingAsTurn($, s, now, what)
   const restoreTtl = conf().pingSubagentTtl1h ? await $.env.get('CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL') : undefined
   let answer: Fork | 'lost'
   s.pinging = true
@@ -467,6 +522,50 @@ async function draftText($: EngineInterface): Promise<boolean> {
   }
 }
 
+/**
+ * A proof run's own ping, on a one-shot timer. It goes through the manual path, so it fires in a
+ * headless or scripted session too: the gate that silences automatic pinging is not meant to
+ * silence an experiment that was asked for by name.
+ */
+function scheduleProofPing($: EngineInterface, s: State, afterMs: number) {
+  clearTimer(s, 'proof')
+  s.timers.proof = $.clock.after(afterMs, () => { void proofPing($, s) })
+}
+
+async function proofPing($: EngineInterface, s: State) {
+  s.timers.proof = null
+  if (!s.proving) return
+  const now = await $.clock.now()
+  if (isCold(s, now)) {
+    $.ui.log('warmproof: the proof ping is too late, the cache had already gone; start the run again')
+    s.proving = false
+    s.provingFast = false
+    return
+  }
+  const blocked = await pingBlockedBy($, s, now, 'manual')
+  if (blocked) {
+    $.ui.log(`warmproof: the proof ping did not go out, ${blocked}`)
+    s.proving = false
+    s.provingFast = false
+    return
+  }
+  const fired = await firePing($, s, now, 'ping for the proof')
+  if (typeof fired === 'string') {
+    $.ui.log(`warmproof: the proof ping failed, ${fired}`)
+    s.proving = false
+    s.provingFast = false
+    return
+  }
+  if (!fired.held) {
+    await benchVersion($, s, 'the proof ping missed the cache')
+    s.proving = false
+    s.provingFast = false
+    return
+  }
+  s.lastRequestAt = now
+  refreshStatus($, s, now)
+}
+
 /** Every reason a ping must not go out, in the order they are checked. */
 async function pingBlockedBy($: EngineInterface, s: State, now: number, kind: 'idle' | 'turn' | 'manual'): Promise<string | null> {
   if (s.project === 'never') return 'pings are off for this project (/warmproof project auto)'
@@ -476,7 +575,9 @@ async function pingBlockedBy($: EngineInterface, s: State, now: number, kind: 'i
   if (s.billing !== 'subscription' && !conf().pingOnMeteredBilling) {
     return `this session bills per token (${s.billing}), where the cache lasts 5 minutes and a ping cannot hold it (pingOnMeteredBilling to override)`
   }
-  if (s.shortTtl) return 'this session uses the 5-minute cache, which pings cannot hold'
+  if (s.shortTtl && !s.provingFast) {
+    return 'this session uses the 5-minute cache, which pings cannot hold'
+  }
   const benched = await $.store.get(SHARED.bench)
   if (benched && typeof benched === 'object' && (benched as { version?: unknown }).version === s.version) {
     const reason = (benched as { reason?: unknown }).reason ?? 'pings did not hold the cache'
@@ -597,7 +698,7 @@ async function scheduleAlert($: EngineInterface, s: State) {
   if (!ntfyReady(conf()) && !conf().desktopNotify) return
   if (!s.lastRequestAt || s.compacted || !worthGuarding(s)) return
   const now = await $.clock.now()
-  const due = s.lastRequestAt + CACHE_LIFE_MS - conf().alertMs - now
+  const due = s.lastRequestAt + cacheLifeMs(s) - conf().alertMs - now
   if (due <= 0) return
   const stamp = s.lastRequestAt
   s.timers.alert = $.clock.after(due, () => { void fireAlert($, s, stamp) })
@@ -610,7 +711,7 @@ async function fireAlert($: EngineInterface, s: State, stamp: number) {
   const now = await $.clock.now()
   if (isCold(s, now) || !worthGuarding(s) || !inWorkHours(new Date(now), conf())) return
   s.alertedFor = stamp
-  const left = fmtDuration(s.lastRequestAt + CACHE_LIFE_MS - now)
+  const left = fmtDuration(s.lastRequestAt + cacheLifeMs(s) - now)
   const message = `Cache goes cold in ${left} in ${folderName(s.cwd)} (${fmtTok(s.ctx)} tokens to re-write). Run /keepwarm to hold it.`
   const away = conf().desktopNotify ? await isAway($, s) : null
   if (conf().desktopNotify && away === false) {
@@ -657,7 +758,7 @@ async function pushToPhone($: EngineInterface, s: State, title: string, message:
 async function mintButtons($: EngineInterface, s: State): Promise<readonly object[]> {
   if (!ntfyButtonsReady(conf())) return []
   const group = crypto.randomUUID()
-  const expiresAt = s.lastRequestAt + CACHE_LIFE_MS
+  const expiresAt = s.lastRequestAt + cacheLifeMs(s)
   const buttons: Array<[PhoneAction, string]> = [['warm2h', 'Keep warm 2h'], ['compact', 'Compact'], ['leave', 'Leave']]
   const actions = buttons.map(([action, label]) => {
     const token = crypto.randomUUID()
@@ -743,6 +844,21 @@ async function applyTap($: EngineInterface, s: State, action: PhoneAction) {
 
 async function tick($: EngineInterface, s: State) {
   const now = await $.clock.now()
+  // shortcut: no test stages this, since a mock clock replays every interval instead of skipping
+  // them as a sleeping host does; upgrade when the kit can drop timers.
+  const slept = sleptMinutes(s.lastTickAt, now, TICK_MS)
+  s.lastTickAt = now
+  if (slept !== null) {
+    // A proof measures what a ping held across a gap. A gap the machine slept through proves
+    // nothing either way, so the run is voided rather than reported as a result.
+    const voided = s.proving
+    s.proving = false
+    s.provingFast = false
+    await note($, s, { kind: 'wake', sleptMin: slept, provingVoided: voided })
+    $.ui.log(`warmproof: the Mac was asleep for about ${fmtDuration(slept * 60_000)}, so nothing could ping` +
+      (voided ? '. The proof run is void: start it again while the Mac stays awake' : ''))
+    await keepRuntime($, s)
+  }
   if (conf().showCountdown) refreshStatus($, s, now)
   if (conf().followLeave) await followLeave($, s, now)
   if (conf().weeklyDigest) await maybeDigest($, s, now)
@@ -763,6 +879,9 @@ async function followLeave($: EngineInterface, s: State, now: number) {
 async function maybeDigest($: EngineInterface, s: State, now: number) {
   const lastSent = await $.store.get(SHARED.digestWeek)
   if (!digestDue(new Date(now), typeof lastSent === 'string' ? lastSent : null, conf().digestWeekday, conf().digestMinute)) return
+  // Nothing logged, nothing to digest: pushing "no evidence logged yet" to your phone and then
+  // marking the week sent would spend the week's one digest on an empty report.
+  if (!s.paths.ledger || !(await $.fs.exists(s.paths.ledger))) return
   const week = weekKey(new Date(now))
   const text = await reportText($, s, now, 7)
   if (s.paths.ledger) await $.fs.write(`${s.paths.ledger}/digest-${week}.md`, text + '\n')
@@ -907,7 +1026,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'warmproof',
       description: 'Cache state, what a cold resume costs, and the evidence behind it (warmproof)',
-      argumentHint: '[status | ping | prove | report [days] | sessions | leave 2h | breaks | project always|auto|never | unbench | guard warn|refuse | forget confirm]',
+      argumentHint: '[status | ping | prove [fast] | report [days] | export [days] | sessions | leave 2h | breaks | project always|auto|never | unbench | guard warn|refuse | forget confirm]',
       immediate: true,
     })
     await $.command.register({
@@ -998,7 +1117,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'warmproof' }, async ($, e) => {
     const words = String(e.args ?? '').trim().split(/\s+/).filter(Boolean)
     const now = await $.clock.now()
-    const [first, second] = words
+    const [first, second, words3] = words
 
     if (first === 'project') {
       if (second !== 'always' && second !== 'auto' && second !== 'never') {
@@ -1040,18 +1159,54 @@ export const register: Register = (on, options) => {
     // The experiment the whole mod rests on, as one command: arm, ping, wait out the hour, and
     // read the verdict from the next real message.
     if (first === 'prove') {
+      const words = [second, words3].filter((word): word is string => typeof word === 'string')
+      const fast = words.includes('fast')
+      const via = words.includes('turn') ? 'turn' : words.includes('fork') ? 'fork' : null
+      if (words.some(word => !['fast', 'fork', 'turn'].includes(word))) {
+        return { text: '/warmproof prove takes fast, fork or turn: prove, prove fast, prove fast turn' }
+      }
       if (!s.lastRequestAt) return { text: 'nothing to prove yet: send a real message first, so there is a cache to hold' }
-      if (isCold(s, now)) return { text: `the cache went cold ${fmtDuration(now - s.lastRequestAt - CACHE_LIFE_MS)} ago; send a message and run this again` }
+      if (fast && !s.shortTtl) {
+        return {
+          text: 'the fast proof runs on the five-minute cache, and this session is on the one-hour one. ' +
+            'Relaunch with CLAUDE_CODE_PROMPT_CACHE_TTL=5m and run it there, or use /warmproof prove for the hour.',
+        }
+      }
+      if (isCold(s, now)) return { text: `the cache went cold ${fmtDuration(now - s.lastRequestAt - cacheLifeMs(s))} ago; send a message and run this again` }
       if (!worthGuarding(s)) {
         return { text: `the context is ${fmtTok(s.ctx)}, below the ${fmtTok(conf().minContextTokens)} worth proving anything about; build more first` }
       }
+      // The fast run has to be allowed past the short-TTL gate before anything is armed.
+      if (fast) s.provingFast = true
       const blocked = await pingBlockedBy($, s, now, 'manual')
-      if (blocked) return { text: `cannot prove it here: ${blocked}` }
-      const window = CACHE_LIFE_MS + 30 * 60_000
-      await startWindow($, s, window, conf().everyMs)
+      if (blocked) {
+        s.provingFast = false
+        return { text: `cannot prove it here: ${blocked}` }
+      }
       s.proving = true
+      s.proveVia = via
+      if (fast) {
+        // The ping has to land near the end of the lifetime, as it does on the hour. One sent at
+        // the start would hold the cache only as long as an unpinged one lives anyway, so it
+        // would prove nothing. The window therefore pings a minute before the five are up, and
+        // the measured message comes two minutes after an unpinged cache would have died.
+        const every = SHORT_CACHE_LIFE_MS - 60_000
+        await startWindow($, s, 20 * 60_000, every)
+        scheduleProofPing($, s, every)
+        await keepRuntime($, s)
+        const wait = fmtDuration(SHORT_CACHE_LIFE_MS + 2 * 60_000)
+        return {
+          text: `fast proof armed with ${fmtTok(s.ctx)} of context, testing the ${via ?? conf().pingVia} mechanism. ` +
+            `A ping goes out after ${fmtDuration(every)} of idle, ` +
+            `a minute before the five-minute cache would lapse. Leave this session alone for ${wait} with the Mac awake, ` +
+            'then send any message: the reply will say proven or NOT proven.',
+        }
+      }
+      const window = cacheLifeMs(s) + 30 * 60_000
+      await startWindow($, s, window, conf().everyMs)
+      scheduleProofPing($, s, conf().everyMs)
       await keepRuntime($, s)
-      const idle = fmtDuration(CACHE_LIFE_MS + 10 * 60_000)
+      const idle = fmtDuration(cacheLifeMs(s) + 10 * 60_000)
       return {
         text: `proof armed for ${fmtDuration(window)} with ${fmtTok(s.ctx)} of context. A ping goes out after ` +
           `${fmtDuration(s.every)} of idle. Now leave this session alone for ${idle} with the Mac awake, then send any ` +
@@ -1066,7 +1221,7 @@ export const register: Register = (on, options) => {
     if (first === 'ping') {
       if (!s.lastRequestAt) return { text: 'nothing to ping yet, no request has gone out this session' }
       if (isCold(s, now)) {
-        return { text: `the cache went cold ${fmtDuration(now - s.lastRequestAt - CACHE_LIFE_MS)} ago, so a ping would only re-write it` }
+        return { text: `the cache went cold ${fmtDuration(now - s.lastRequestAt - cacheLifeMs(s))} ago, so a ping would only re-write it` }
       }
       const blocked = await pingBlockedBy($, s, now, 'manual')
       if (blocked) return { text: `no ping, ${blocked}` }
@@ -1111,6 +1266,12 @@ export const register: Register = (on, options) => {
       return { text: `emptied ${cleared} evidence file${cleared === 1 ? '' : 's'} and dropped ${keys} stored key${keys === 1 ? '' : 's'}` }
     }
     if (first === 'report') return { text: await reportText($, s, now, Number(second ?? 7) || 7) }
+    // For an issue: the totals plus every verdict and miss, with nothing in it worth redacting.
+    if (first === 'export') {
+      const days = Number(second ?? 7) || 7
+      if (!s.paths.ledger || !(await $.fs.exists(s.paths.ledger))) return { text: 'no evidence logged yet' }
+      return { text: exportFrom(await readRows($, s, now, days), now, days) }
+    }
     if (first === 'guard') {
       if (second !== 'warn' && second !== 'refuse') return { text: '/warmproof guard takes warn or refuse' }
       s.guard = second
@@ -1154,6 +1315,12 @@ export const register: Register = (on, options) => {
     try {
       const now = await $.clock.now()
       if (!isCold(s, now) || !worthGuarding(s)) return next(e)
+      // A proof run was told to let the cache lapse, and this message is the measurement.
+      // Holding it would drop the very verdict the run exists to produce.
+      if (s.proving) {
+        s.coldWritePending = true
+        return next(e)
+      }
       const hold = conf().autoArmOnColdWrite ? `, and keepwarm will then hold it for ${fmtDuration(AFTER_COLD_WRITE_MS)}` : ''
       if (s.guard === 'warn') {
         $.ui.log(`warmproof: ${coldSendWarning(s, now)} Sending anyway${hold}.`)
@@ -1202,6 +1369,9 @@ export const register: Register = (on, options) => {
     s.compacted = false
     s.guardShownFor = 0
     s.alertedFor = 0
+    // A stop reason is news until you work again. Keeping it after a real turn would leave the
+    // status line stuck on it for the rest of the session and hide the cache countdown.
+    s.stopped = null
 
     const u = e.usage
     if (u) {
@@ -1214,8 +1384,35 @@ export const register: Register = (on, options) => {
       const rewroteMost = previousCtx > PROOF_FLOOR_TOKENS && written >= 0.5 * previousCtx
       const idleMs = s.lastTurnAt ? now - e.durationMs - s.lastTurnAt : 0
 
+      // A ping WarmProof sent as a real turn. It has to be booked as a ping and nothing else:
+      // treating it as your own turn would restart the break it was sent to carry, so the figures
+      // would show a warm cache and no proof would ever be written.
+      if (s.pingTurnAt > 0) {
+        const mine = now - s.pingTurnAt <= PING_TURN_WINDOW_MS
+        s.pingTurnAt = 0
+        if (mine) {
+          const read = u.cache_read_input_tokens
+          const held = read > 0 && written < 0.1 * read
+          const rates = ratesFor(s.lastModel)
+          const usd = rates ? forkUsd(u, rates) : null
+          s.lastPing = { at: now, read, write: written, usd, warm: held }
+          s.pingsSinceTurn++
+          const spend = spendTokens({ read, write: written, input: u.input_tokens, output: u.output_tokens })
+          await addSpend($, s, now, spend)
+          await note($, s, {
+            kind: 'ping', read, write: written, input: u.input_tokens, output: u.output_tokens,
+            warm: held, via: 'turn', spend,
+            idleMin: s.lastTurnAt ? Math.round(idleMs / 60_000) : 0,
+            limits: limitsOf((await $.session.usage()).rateLimits),
+          })
+          await keepRuntime($, s)
+          refreshStatus($, s, now)
+          return done
+        }
+      }
+
       // The proof: the first real request after a pinged break longer than the cache's life.
-      if (s.pingsSinceTurn > 0 && idleMs > CACHE_LIFE_MS && s.ctxAtTurn > PROOF_FLOOR_TOKENS) {
+      if (s.pingsSinceTurn > 0 && idleMs > cacheLifeMs(s) && s.ctxAtTurn > PROOF_FLOOR_TOKENS) {
         const verdict = breakVerdict(s.ctxAtTurn, u.cache_read_input_tokens, written)
         const pings = `${s.pingsSinceTurn} ping${s.pingsSinceTurn === 1 ? '' : 's'}`
         await note($, s, {
@@ -1236,7 +1433,7 @@ export const register: Register = (on, options) => {
         ? coldCause({
           hasPrevTurn: s.lastTurnAt > 0, prevModel: s.prevTurnModel, model: s.lastModel,
           prevEffort: s.prevTurnEffort, effort: s.effort, compactedSince: s.compactedSinceTurn,
-          idleMs, ttlMs: CACHE_LIFE_MS,
+          idleMs, ttlMs: cacheLifeMs(s),
         })
         : undefined
       await note($, s, {

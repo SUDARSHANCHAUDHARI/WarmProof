@@ -10,6 +10,8 @@ import type { PluginOptions } from 'claude-code'
 export type CostUnit = 'tokens' | 'usd'
 export type AfterHours = 'handoff' | 'keep-pinging'
 export type EndOfWindow = 'nothing' | 'compact' | 'handoff'
+/** How a ping reaches the model: a side request, or a real turn as other keep-warm tools do. */
+export type PingVia = 'fork' | 'turn'
 
 /** Milliseconds in a minute. Options are written in minutes and hours; the engine works in ms. */
 const MINUTE = 60_000
@@ -51,6 +53,8 @@ export type Config = {
   pauseAbovePlanPercent: number
   evidenceMaxKb: number
   denyToolsDuringPing: boolean
+  adaptPingPeriod: boolean
+  pingVia: PingVia
 }
 
 /** What a session is asked to summarise when the working day ends with the cache still warm. */
@@ -135,6 +139,8 @@ export function readConfig(options: PluginOptions): Config {
     pauseAbovePlanPercent: clamp(given(options, 'pauseAbovePlanPercent', 0), 0, 100),
     evidenceMaxKb: Math.max(0, given(options, 'evidenceMaxKb', 1024)),
     denyToolsDuringPing: given(options, 'denyToolsDuringPing', true),
+    adaptPingPeriod: given(options, 'adaptPingPeriod', false),
+    pingVia: oneOf(options, 'pingVia', ['fork', 'turn']),
   }
 }
 

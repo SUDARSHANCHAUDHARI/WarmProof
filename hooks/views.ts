@@ -5,13 +5,13 @@ import { inWorkHours } from './extras'
 import { coldWriteUsd, fmtDuration, fmtTok, fmtUsd, price, pingsPerColdWrite, ratesFor, warmReadUsd } from './money'
 import { suggestWindowMs, summarise } from './policy'
 import type { Report, ReportRow } from './policy'
-import { BREAK_HISTORY_DAYS, CACHE_LIFE_MS, DAY_MS, conf } from './runtime'
+import { BREAK_HISTORY_DAYS, DAY_MS, cacheLifeMs, conf } from './runtime'
 import type { State } from './runtime'
 
 /** The cache is cold once a full lifetime has passed with no request reading it. */
 export function isCold(s: State, now: number): boolean {
   if (!s.lastRequestAt || s.compacted) return false
-  return now - s.lastRequestAt >= CACHE_LIFE_MS
+  return now - s.lastRequestAt >= cacheLifeMs(s)
 }
 
 /** Is there enough context in play for a cold resume to be worth warning about? */
@@ -21,7 +21,7 @@ export function worthGuarding(s: State): boolean {
 
 /** What the next message will cost now that the cache has gone, said in the chosen unit. */
 export function coldSendWarning(s: State, now: number): string {
-  const gone = fmtDuration(now - s.lastRequestAt - CACHE_LIFE_MS)
+  const gone = fmtDuration(now - s.lastRequestAt - cacheLifeMs(s))
   const tokens = s.ctx.toLocaleString('en-US')
   if (conf().costUnit === 'tokens') {
     return `the prompt cache went cold ${gone} ago. Sending this re-writes up to ${tokens} tokens ` +
@@ -40,7 +40,7 @@ function cacheCountdown(s: State, now: number): string | undefined {
   if (!s.lastRequestAt || s.compacted || !worthGuarding(s)) return undefined
   const cost = price(s.ctx, coldWriteUsd(s))
   if (isCold(s, now)) return `cache cold · the next message re-writes ${cost}`
-  return `cache ${fmtDuration(s.lastRequestAt + CACHE_LIFE_MS - now)} left · cold resume ${cost}`
+  return `cache ${fmtDuration(s.lastRequestAt + cacheLifeMs(s) - now)} left · cold resume ${cost}`
 }
 
 /** When the next ping is due, or why none is coming yet. */
@@ -116,7 +116,7 @@ function cacheRow(s: State, now: number): string {
   if (s.compacted) return `compaction reset it, waiting for the first turn · ${ttl}`
   if (!s.lastRequestAt) return `nothing requested yet this session · ${ttl}`
   if (isCold(s, now)) return `gone, last request ${fmtDuration(now - s.lastRequestAt)} ago · ${ttl}`
-  return `holding, ${fmtDuration(s.lastRequestAt + CACHE_LIFE_MS - now)} left · ${ttl}`
+  return `holding, ${fmtDuration(s.lastRequestAt + cacheLifeMs(s) - now)} left · ${ttl}`
 }
 
 function windowRow(s: State, now: number): string {
@@ -192,6 +192,37 @@ export function reportFrom(rows: readonly ReportRow[], now: number, days: number
     column('cold writes') + `${totals.coldWrites}, ${fmtTok(totals.coldTokens)} tokens re-written (causes: ${causes})`,
     column('held') + `${totals.compactionsHeld} idle compaction${totals.compactionsHeld === 1 ? '' : 's'} held during a window`,
     ...planCostLine(totals),
+  ].join('\n')
+}
+
+/**
+ * The evidence as something you can paste into an issue: the totals, then the rows that carry a
+ * verdict or a miss. Only the fields that say what the cache did — no folder, no file name, no
+ * timestamps beyond the date — because a bug report should not need redacting by hand.
+ */
+export function exportFrom(rows: readonly ReportRow[], now: number, days: number): string {
+  const since = now - days * DAY_MS
+  const kept = rows
+    .filter(row => Date.parse(row.at) >= since)
+    .filter(row => row.kind === 'break-check' || row.kind === 'wake' || (row.kind === 'ping' && row.warm === false))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+  const number = (row: ReportRow, field: string) => (typeof row[field] === 'number' ? (row[field] as number) : 0)
+  const lines = kept.map(row => {
+    const day = row.at.slice(0, 10)
+    if (row.kind === 'break-check') {
+      return `${day}  break-check  ${row.verdict}  idle ${number(row, 'idleMin')}m  pings ${number(row, 'pings')}  ` +
+        `read ${number(row, 'read')}  wrote ${number(row, 'write')}  context before ${number(row, 'prevCtx')}`
+    }
+    if (row.kind === 'wake') return `${day}  wake         asleep about ${number(row, 'sleptMin')}m`
+    return `${day}  ping missed  read ${number(row, 'read')}  wrote ${number(row, 'write')}`
+  })
+  return [
+    '```',
+    reportFrom(rows, now, days),
+    '',
+    lines.length ? `verdicts and misses, last ${days} day${days === 1 ? '' : 's'}:` : `no verdicts or misses in the last ${days} days`,
+    ...lines,
+    '```',
   ].join('\n')
 }
 

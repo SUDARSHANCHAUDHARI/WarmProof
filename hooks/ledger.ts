@@ -29,6 +29,8 @@ export type LedgerRow =
     spend?: number
     limits?: PlanUsage
     during?: 'turn'
+    /** Which mechanism sent it, when the A/B option is in use. */
+    via?: 'fork' | 'turn'
   })
   /** The verdict on a break the pings were meant to carry. The point of the whole exercise. */
   | {
@@ -75,6 +77,8 @@ export type LedgerRow =
   | { kind: 'leave'; until: string }
   /** The week a digest went out. */
   | { kind: 'digest'; week: string }
+  /** The machine slept, so nothing could ping and no gap over it means anything. */
+  | { kind: 'wake'; sleptMin: number; provingVoided: boolean }
 
 /**
  * The proof, read from the first real request after a break the pings covered.

@@ -9,8 +9,10 @@ import { readConfig } from './extras'
 import type { Config } from './extras'
 import type { Billing, TtlSource } from './policy'
 
-/** The cache's idle lifetime on the one-hour bucket. Every deadline here is measured against it. */
+/** The cache's idle lifetime on the one-hour bucket. */
 export const CACHE_LIFE_MS = 60 * 60 * 1000
+/** And on the five-minute one, which is what a metered or capped session gets. */
+export const SHORT_CACHE_LIFE_MS = 5 * 60 * 1000
 export const MINUTE_MS = 60 * 1000
 /** A ping period below this is a typo, not an instruction. */
 export const PING_FLOOR_MS = MINUTE_MS
@@ -18,6 +20,8 @@ export const PING_FLOOR_MS = MINUTE_MS
 export const AFTER_COLD_WRITE_MS = 3 * 60 * MINUTE_MS
 /** A ping with no answer by now is treated as lost, though it may still have been billed. */
 export const PING_DEADLINE_MS = 2 * MINUTE_MS
+/** How long a ping sent as a real turn is still expected to arrive through `turn.complete`. */
+export const PING_TURN_WINDOW_MS = 3 * MINUTE_MS
 /** A handoff is a real answer, so it gets longer than a ping. */
 export const NOTE_DEADLINE_MS = 5 * MINUTE_MS
 export const PHONE_POLL_MS = 20 * 1000
@@ -76,6 +80,8 @@ export type ProfilePaths = {
 /** Every timer the session owns, so a stop can clear them without hunting through fields. */
 export type Timers = {
   ping: Cancellable | null
+  /** A proof run's own ping, which fires even where automatic pinging is off. */
+  proof: Cancellable | null
   turnPing: Cancellable | null
   alert: Cancellable | null
   phone: Cancellable | null
@@ -120,6 +126,12 @@ export type State = {
   autoPingsSinceTurn: number
   /** A `/warmproof prove` run is waiting for its verdict; the next break check is it. */
   proving: boolean
+  /** A proof deliberately run on the five-minute bucket, which the usual gate would refuse. */
+  provingFast: boolean
+  /** The mechanism this proof run is testing, overriding the option for its own ping only. */
+  proveVia: 'fork' | 'turn' | null
+  /** When the once-a-minute tick last ran, so a sleeping Mac can be told from an idle one. */
+  lastTickAt: number
   pingsThisTurn: number
   lastPing: PingRecord | null
   coldWrites: ColdWrite[]
@@ -127,6 +139,14 @@ export type State = {
 
   // Turn bookkeeping.
   pinging: boolean
+  /**
+   * When a ping was sent as a real turn, the moment it was submitted. That turn arrives through
+   * `turn.complete` like any other, where it has to be booked as a ping instead: counting it as
+   * your own turn would reset the very break the ping was sent to carry, and no proof could ever
+   * be written. Zero once that turn has landed, or once `PING_TURN_WINDOW_MS` has passed without
+   * it, so a ping that never arrives cannot swallow a real turn later.
+   */
+  pingTurnAt: number
   turnRunning: boolean
   compactedSinceTurn: boolean
   prevTurnModel: string | null
@@ -151,12 +171,21 @@ export function freshState(): State {
     lastRequestAt: 0, lastModel: null, effort: null, ctx: 0, compacted: false,
     shortTtl: false, ttlSource: 'assumed', ttlCheckedAt: 0, billing: 'subscription',
     deadline: 0, every: conf().everyMs, always: false, stopped: null, fromBackground: false,
-    timers: { ping: null, turnPing: null, alert: null, phone: null, tick: null },
-    lastTurnAt: 0, ctxAtTurn: 0, pingsSinceTurn: 0, autoPingsSinceTurn: 0, proving: false, pingsThisTurn: 0, lastPing: null, coldWrites: [], breaks: [],
-    pinging: false, turnRunning: false, compactedSinceTurn: false, prevTurnModel: null, prevTurnEffort: null, wakeAt: null,
+    timers: { ping: null, proof: null, turnPing: null, alert: null, phone: null, tick: null },
+    lastTurnAt: 0, ctxAtTurn: 0, pingsSinceTurn: 0, autoPingsSinceTurn: 0, proving: false, provingFast: false, proveVia: null, lastTickAt: 0, pingsThisTurn: 0, lastPing: null, coldWrites: [], breaks: [],
+    pinging: false, pingTurnAt: 0, turnRunning: false, compactedSinceTurn: false, prevTurnModel: null, prevTurnEffort: null, wakeAt: null,
     guard: 'refuse', guardShownFor: 0, coldWritePending: false, alertedFor: 0,
     phone: new Map(), phoneSince: 0, notePath: null, leaveSeen: null,
   }
+}
+
+/**
+ * How long this session's cache actually lives. Reading it from the session rather than assuming
+ * an hour is what lets a five-minute session show a true countdown — and what makes a proof on
+ * the short bucket mean the same thing as one on the long bucket.
+ */
+export function cacheLifeMs(s: Pick<State, 'shortTtl'>): number {
+  return s.shortTtl ? SHORT_CACHE_LIFE_MS : CACHE_LIFE_MS
 }
 
 /** Cancels one timer and forgets it. */
