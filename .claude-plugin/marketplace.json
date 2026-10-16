@@ -1,0 +1,14 @@
+{
+  "name": "warmproof",
+  "description": "WarmProof: keeps Claude Code's one-hour prompt cache warm across a break, and proves whether it held.",
+  "owner": {
+    "name": "Sudarshan"
+  },
+  "plugins": [
+    {
+      "name": "warmproof",
+      "source": "./",
+      "description": "Keeps Claude Code's one-hour prompt cache warm across a break, and proves whether it held."
+    }
+  ]
+}

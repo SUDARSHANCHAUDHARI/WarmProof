@@ -1,0 +1,6 @@
+{
+  "description": "WarmProof: keeps the one-hour prompt cache warm on request and logs the evidence that it held. Registers /keepwarm, /warmproof and /handoff, and listens on session start, prompt submit, turn step/start/complete, Stop, compaction, model switch and ScheduleWakeup. Function hooks must be enabled (CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1); a build without them ignores the modules key below.",
+  "modules": [
+    "./register.ts"
+  ]
+}

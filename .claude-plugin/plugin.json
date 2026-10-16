@@ -1,0 +1,258 @@
+{
+  "name": "warmproof",
+  "displayName": "WarmProof",
+  "version": "0.7.0",
+  "description": "Keeps Claude Code's one-hour prompt cache warm when you ask (and only in working hours), and proves it: every ping, turn and compaction is logged, and the first message after a pinged break says whether the cache held. Fork pings with no extra turns, per-version pause on a miss, ping cap, daily budget, background-work and self-wake awareness, idle-compaction hold, end-of-window compact or handoff, ntfy alerts with one-time buttons. Profile-aware (CLAUDE_CONFIG_DIR).",
+  "author": {
+    "name": "Sudarshan"
+  },
+  "license": "MIT",
+  "userConfig": {
+    "costUnit": {
+      "type": "string",
+      "title": "Show cost as",
+      "description": "tokens (right for a subscription) or usd (API-equivalent list price)",
+      "options": [
+        "tokens",
+        "usd"
+      ],
+      "default": "tokens"
+    },
+    "windowHours": {
+      "type": "number",
+      "title": "Keep-warm window (hours)",
+      "description": "How long a bare /keepwarm and /keepwarm always keep pinging",
+      "default": 6,
+      "min": 1,
+      "max": 24
+    },
+    "pingEveryMinutes": {
+      "type": "number",
+      "title": "Ping after idle (minutes)",
+      "description": "Idle time before each keep-alive ping; must stay under the 60-minute cache lifetime",
+      "default": 50,
+      "min": 1,
+      "max": 55
+    },
+    "minContextTokens": {
+      "type": "number",
+      "title": "Minimum context to act on",
+      "description": "Below this many context tokens a cold resume is cheap: no guard, no alert, no handoff",
+      "default": 50000,
+      "min": 0
+    },
+    "workStart": {
+      "type": "string",
+      "title": "Working day starts (HH:MM, local time)",
+      "description": "Pings and phone alerts only happen inside working hours",
+      "default": "09:00"
+    },
+    "workEnd": {
+      "type": "string",
+      "title": "Working day ends (HH:MM, local time)",
+      "description": "After this time a ping is replaced by the after-hours action",
+      "default": "18:30"
+    },
+    "workdaysOnly": {
+      "type": "boolean",
+      "title": "Weekdays only",
+      "description": "Treat Saturday and Sunday as outside working hours",
+      "default": true
+    },
+    "afterHours": {
+      "type": "string",
+      "title": "Outside working hours",
+      "description": "handoff: stop pinging and save a handoff note; keep-pinging: ignore working hours",
+      "options": [
+        "handoff",
+        "keep-pinging"
+      ],
+      "default": "handoff"
+    },
+    "handoff": {
+      "type": "boolean",
+      "title": "Write a handoff note",
+      "description": "Save a handoff summary to <profile config dir>/handoffs/ when keep-warm stops after hours",
+      "default": true
+    },
+    "ntfyServer": {
+      "type": "string",
+      "title": "ntfy server",
+      "description": "Server for phone alerts",
+      "default": "https://ntfy.sh"
+    },
+    "ntfyTopic": {
+      "type": "string",
+      "title": "ntfy topic",
+      "description": "Topic for phone alerts before the cache goes cold; empty turns alerts off. Only the folder name is sent",
+      "default": "",
+      "sensitive": true
+    },
+    "alertMinutes": {
+      "type": "number",
+      "title": "Alert this many minutes before expiry",
+      "description": "Phone alert lead time when keep-warm is off; 0 turns alerts off",
+      "default": 5,
+      "min": 0,
+      "max": 30
+    },
+    "blockIdleCompaction": {
+      "type": "boolean",
+      "title": "Hold idle compaction during keep-warm",
+      "description": "While a /keepwarm window is on, skip Claude Code's idle compaction so the context you asked to keep stays whole",
+      "default": true
+    },
+    "autoArmOnColdWrite": {
+      "type": "boolean",
+      "title": "Keep warm after a cold write",
+      "description": "After you pay a cold re-write, ping for 3 hours without being asked. Off: pinging only ever starts from /keepwarm",
+      "default": false
+    },
+    "maxPingsPerIdle": {
+      "type": "number",
+      "title": "Most pings per idle stretch",
+      "description": "Stop pinging after this many pings without a real turn",
+      "default": 8,
+      "min": 1,
+      "max": 24
+    },
+    "warmDuringBackgroundWork": {
+      "type": "boolean",
+      "title": "Keep warm while background work runs",
+      "description": "Ping automatically while a subagent, background shell or workflow is still running (dev servers and monitors are ignored)",
+      "default": false
+    },
+    "backgroundWarmHours": {
+      "type": "number",
+      "title": "Background keep-warm limit (hours)",
+      "description": "Longest automatic window for background work",
+      "default": 3,
+      "min": 1,
+      "max": 12
+    },
+    "endOfWindow": {
+      "type": "string",
+      "title": "When a keep-warm window ends",
+      "description": "nothing: let it cool; compact: compact once while still warm (big sessions); handoff: save a handoff note",
+      "options": [
+        "nothing",
+        "compact",
+        "handoff"
+      ],
+      "default": "nothing"
+    },
+    "compactMinTokens": {
+      "type": "number",
+      "title": "Compact at window end above (tokens)",
+      "description": "endOfWindow compact only acts on contexts at least this big",
+      "default": 200000,
+      "min": 0
+    },
+    "dailyPingBudget": {
+      "type": "number",
+      "title": "Daily ping budget (input-equivalent tokens)",
+      "description": "Across all sessions per local day: reads 0.1x, 1h writes 2x, output 5x. 0 means no cap",
+      "default": 1000000,
+      "min": 0
+    },
+    "ntfyReplyTopic": {
+      "type": "string",
+      "title": "ntfy reply topic (phone buttons)",
+      "description": "A second private topic; when set, phone alerts carry Keep warm 2h / Compact / Leave buttons",
+      "default": "",
+      "sensitive": true
+    },
+    "showCountdown": {
+      "type": "boolean",
+      "title": "Always show the cache countdown",
+      "description": "Show time left on the cache and the cold-resume cost even when no keep-warm window is on",
+      "default": true
+    },
+    "pingSubagentTtl1h": {
+      "type": "boolean",
+      "title": "Give ping forks the one-hour cache",
+      "description": "Forks sit in the 5-minute cache bucket by default. On: set CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h for each ping only, then restore it. Turn on only if the proof test says pings do not hold the cache without it",
+      "default": false
+    },
+    "warmDuringLongTurns": {
+      "type": "boolean",
+      "title": "Keep warm during long tool runs",
+      "description": "While one turn runs a long command or subagent with no new request, ping before the hour runs out so the cache is still warm when it finishes",
+      "default": false
+    },
+    "desktopNotify": {
+      "type": "boolean",
+      "title": "Desktop notification when you are at the Mac",
+      "description": "Send the before-expiry alert as a macOS notification when you used the keyboard or mouse recently; the phone gets it only when you are away",
+      "default": false
+    },
+    "awayMinutes": {
+      "type": "number",
+      "title": "Away after (minutes without input)",
+      "description": "Keyboard and mouse idle time that counts as away, for choosing phone or desktop",
+      "default": 5,
+      "min": 1,
+      "max": 120
+    },
+    "pingOnlyIfWorthIt": {
+      "type": "boolean",
+      "title": "Ping only when it pays",
+      "description": "Skip a ping when your past breaks say you are unlikely to be back within the next hour (needs 5 logged breaks)",
+      "default": false
+    },
+    "weeklyDigest": {
+      "type": "boolean",
+      "title": "Weekly digest",
+      "description": "Once a week, send the /warmproof report summary to your phone (ntfy) and save it as a file next to the evidence log",
+      "default": false
+    },
+    "digestWeekday": {
+      "type": "number",
+      "title": "Digest weekday (0 Sunday \u2026 6 Saturday)",
+      "description": "Day the weekly digest goes out",
+      "default": 1,
+      "min": 0,
+      "max": 6
+    },
+    "digestTime": {
+      "type": "string",
+      "title": "Digest time (HH:MM, local)",
+      "description": "Time the weekly digest goes out",
+      "default": "09:30"
+    },
+    "followLeave": {
+      "type": "boolean",
+      "title": "Join an away plan from another session",
+      "description": "When /warmproof leave is used in any session, this session keeps its warm cache until then too (checked once a minute)",
+      "default": true
+    },
+    "pingOnMeteredBilling": {
+      "type": "boolean",
+      "title": "Ping on metered billing too",
+      "description": "API key, relay, Bedrock, Vertex and Foundry sessions bill per token and cache for 5 minutes, so pings are off there. On: ping anyway",
+      "default": false
+    },
+    "pauseAbovePlanPercent": {
+      "type": "number",
+      "title": "Pause pinging above this plan usage (%)",
+      "description": "Stop pinging once any plan limit reaches this percentage, keeping the rest of your allowance for real work; 0 turns the check off",
+      "default": 0,
+      "min": 0,
+      "max": 100
+    },
+    "evidenceMaxKb": {
+      "type": "number",
+      "title": "Roll the evidence log above (KB)",
+      "description": "A session's evidence file is rolled into <session>.1.jsonl past this size, so a long session cannot grow without limit; 0 never rolls",
+      "default": 1024,
+      "min": 0
+    },
+    "denyToolsDuringPing": {
+      "type": "boolean",
+      "title": "Refuse tool calls while a ping is in flight",
+      "description": "A keep-warm ping asks for one word and must never act. Calls from another loop are refused for the second or so a ping takes; your own tools are never affected",
+      "default": true
+    }
+  },
+  "types": "./types/index.d.ts"
+}
