@@ -3,7 +3,7 @@
 Notable changes to WarmProof. Versions follow [semantic versioning](https://semver.org/), and the
 version in `.claude-plugin/plugin.json` is the one a release is tagged with.
 
-## 0.8.0 — unreleased
+## [0.8.0] — 2026-10-16
 
 The first version worth using. Everything below is in it.
 
@@ -56,3 +56,5 @@ The first version worth using. Everything below is in it.
   cache still warm, and a weekly digest of what the pings saved.
 - A countdown segment above the prompt, and a status line segment for people who want one.
 - Every hook fails open: a hook that throws is logged and the session carries on.
+
+[0.8.0]: https://github.com/SUDARSHANCHAUDHARI/WarmProof/releases/tag/v0.8.0
