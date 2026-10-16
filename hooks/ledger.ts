@@ -45,7 +45,7 @@ export type LedgerRow =
   /** Anything WarmProof spent or sent, written by the wrapper that did it. */
   | {
     kind: 'request'
-    via: 'fork' | 'compact' | 'http' | 'process'
+    via: 'fork' | 'turn' | 'compact' | 'http' | 'process'
     what: string
     ok: boolean
     timedOut?: boolean
