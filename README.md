@@ -12,11 +12,11 @@ It pings only when you ask it to, only inside your working hours, and adds no tu
 conversation unless you switch `pingVia` to `turn` yourself. Every ping, every real turn and every compaction is written down, and the first
 message after a pinged break says `proven` or `NOT proven`.
 
-It does work, and the claim is measured rather than argued: across five runs on both cache
-lifetimes, every pinged break came back `extended`. On the one-hour cache, one ping carried a
-54,717-token context across a 70-minute gap and the next message read 54,715 of those tokens back
-while writing 463. A control over the same gap with nothing pinging re-wrote 32,314.
-`/warmproof prove` runs that experiment on your own setup.
+It does work, and the claim is measured rather than argued: across seven runs on both cache
+lifetimes, every pinged break came back `extended`. The cleanest pair ran on the one-hour cache in
+the same minutes — one session pinged once at 50 minutes idle, the other not at all. After a
+70-minute gap the pinged session's next message read 54,698 tokens from the cache and wrote 463.
+The unpinged one re-wrote 32,298. `/warmproof prove` runs that experiment on your own setup.
 
 ## What it does
 
@@ -325,21 +325,23 @@ Needs Claude Code 2.1.287 or later, since mods are an early-access API. Built an
 
 ## Known limits
 
-- **The core claim is measured, and it has held every time so far.** Five runs, both buckets, one
+- **The core claim is measured, and it has held every time so far.** Seven runs, both buckets, one
   account, Claude Code 2.1.294, each one a fork ping across a gap longer than the cache's own
-  lifetime:
+  lifetime, plus two controls over the same gaps with nothing pinging:
 
   | Run | Context | Ping | Gap | Next message | Verdict |
   | --- | --- | --- | --- | --- | --- |
   | 1h bucket | 54,763 | read 54,761 | 75m | read 54,761, wrote 419 | `extended` |
-  | 1h bucket | 54,717 | read 54,715, wrote 4 | 70m | read 54,715, wrote 463 | `extended` |
+  | 1h bucket ×3 | 54,700–54,717 | read 54,698–54,715, wrote 4 | 70m | read 54,698–54,715, wrote 463 | `extended` ×3 |
+  | **1h control** | 54,705 | none | 70m | read 22,646, **re-wrote 32,298** | `ttl-expired` |
   | 5m bucket ×3 | 54,840–54,844 | read 54,838–54,842, wrote 4 | 7m | read 54,842–54,846, wrote 466 | `extended` ×3 |
   | 5m control | 54,846 | none | 7m | read 22,771, **re-wrote 32,314** | `ttl-expired` |
 
-  The control is the comparison that matters: same gap, same minute, same context, and the only
-  difference is the ping. Its 22,771-token read is the static system prefix, not the conversation.
-  Two further controls never reached that point at all, because the cold-send guard refused the
-  message first — which is independent confirmation that the cache really had gone.
+  The controls are the comparison that matters, and the one-hour pair ran in the same minutes as
+  its pinged twin: same gap, same context, the ping the only difference. 463 tokens re-written
+  with one, 32,298 without. A control's ~22,600-token read is the static system prefix, not the
+  conversation. Two further controls never reached that point at all, because the cold-send guard
+  refused the message first — independent confirmation that the cache really had gone.
 
   A ping costs about 5,500 input-equivalent tokens and avoids re-writing roughly 32,000, which at
   the one-hour write rate is about 64,600 of the same units: twelve pings to the price of one cold
