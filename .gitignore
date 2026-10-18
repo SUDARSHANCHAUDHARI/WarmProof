@@ -3,6 +3,10 @@
 
 # Working documents, never source
 .flow/
+REPO_STATUS.md
+
+# This checkout's own Claude Code settings, which belong to whoever cloned it
+.claude/
 
 # macOS
 .DS_Store
