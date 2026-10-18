@@ -236,6 +236,33 @@ Kill switch: create `<config dir>/warmproof-off` and nothing will ping.
 - **Checks:** `claude plugin test` (138 cases) plus two self-checking Python scripts, on CI for Linux and macOS
 - **Requires:** Claude Code 2.1.287 or later, since mods are an early-access API
 
+## Installing
+
+```sh
+claude plugin marketplace add SUDARSHANCHAUDHARI/WarmProof
+claude plugin install warmproof@warmproof
+```
+
+The first command registers this repository as a marketplace; the second installs the plugin from
+it. `warmproof@warmproof` is `<plugin>@<marketplace>`, and both are named `warmproof` here.
+`claude plugin marketplace update warmproof` pulls later versions.
+
+Mods are an early-access API, so function hooks have to be switched on for the plugin to load at
+all:
+
+```sh
+export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
+```
+
+To run it from a clone instead, without installing anything:
+
+```sh
+claude --plugin-dir /path/to/WarmProof
+```
+
+Nothing pings until you ask it to, so installing it changes nothing on its own. `/warmproof` shows
+where the cache stands, and `/keepwarm` is the first command worth typing.
+
 ## Running it
 
 ```sh
